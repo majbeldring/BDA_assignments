@@ -1,0 +1,210 @@
+---
+title: "BDA - Assignment 8"
+author: "Anonymous"
+date: "5/4/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # Default eco=TRUE
+# if echo=FALSE: Code is not included
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse) 
+library(aaltobda)
+library(rstan)
+# stan settings:
+source('stan_utility.R') # diagnosis of rhats
+options(mc.cores = parallel::detectCores()) #for local computer
+rstan_options(auto_write = TRUE) # autosave Stan
+# bay settings:
+library(loo) #pred. error of MCMC log likelihood
+library(gridExtra)
+library(bayesplot) #plots of posterior draws (mcmc_hist etc)
+library(shinystan) # model paramteres & MCMC simulations
+bayesplot_theme_set() #default
+SEED <- 48927 # random seed for reproducability
+data("factory")
+```
+
+In this assignment we will do a model assessment using the leave-one-out cross-validation (LOO-CV) for the factory data from the aaltobda package.
+In the factory data, the quality of 6 machines are given. 
+
+## Q1 - Fitting of the models
+
+Given we have 6 machines, our three stan models are:
+```{r}
+# display the stanmodels
+writeLines(readLines("ex8_separate.stan"))
+writeLines(readLines("ex8_pooled.stan"))
+writeLines(readLines("ex8_hierarchical.stan"))
+```
+
+### Fitting of the seperate model:
+Assumptions:
+
++ Priors are uniform
++ There are 6 machines
++ Each machine (j) has unrelated means $\mu_j$ and standard deviations $\sigma_j$
+
+```{r warning=FALSE}
+# creating data
+d_separate <-list(N = 30,
+                  K = 6,
+                  x = rep(1:ncol(factory), nrow(factory)),
+                  y = c(t(factory)))
+# fitting
+fit_separate <- stan(file="ex8_separate.stan", 
+                     data = d_separate, seed = SEED)
+```
+
+### Fitting of the pooled model:
+Assumptions:
+
++ Priors are uniform
++ The machines equals only one machine, where all the data comes from
++ The one machince has one mean $\mu$ and one standard deviation $\sigma$
+
+```{r}
+# creating data
+d_pooled <- list(N = 30,
+                 y = c(t(factory)))
+# fitting
+fit_pooled <- stan(file = "ex8_pooled.stan", 
+                   data = d_pooled, seed = SEED)
+```
+
+### Fitting of the hierarchical model:
+Assumptions:
+
++ Prior distribution follows: $\mu \sim \mathcal{N} (\mathbf{\mu_0}, \mathbf{\sigma_0} )$
++ Equal standard deviation for all machines $\sigma$
+
+```{r}
+# creating data
+d_hierarchical <-list(N = 30,
+                      K = 6,
+                      x = rep(1:ncol(factory), nrow(factory)),
+                      y = c(t(factory)))
+# fitting
+fit_hierarchical <- stan(file="ex8_hierarchical.stan", 
+                         data = d_hierarchical, seed = SEED)
+
+```
+
+## Q2
+For model checking and comparison of models, we will do a Pareto smoothed importance-sampling leave-one-out cross-validation (PSIS-LOO) to compute the expected log predictive density (elpd) values and $\hat{k}$-values.
+We use the functions from the loo package for this and for a diagnostic plot, visualizing the $\hat{k}$-values. 
+The horizontal lines in the plot helps determing if the $\hat{k}$-values are good or not. A value <5 is considered good, <0.7 is ok and >0.7 is bad.
+
+### Separate
+
+```{r}
+# seperate
+log_lik_separate <- extract_log_lik(fit_separate,
+                                    merge_chains = FALSE)
+r_eff_separate <- relative_eff(exp(log_lik_separate)) 
+loo_separate <- loo(log_lik_separate, 
+                    r_eff = r_eff_separate)
+print(loo_separate)
+# visulazing
+plot(loo_separate, diagnostic = c("k", "n_eff"),
+     label_points = FALSE, main = "PSIS - separate")
+```
+
+For the separate model we get:
+
++ PSIS-LOO : -132.6
++ $\hat{k}$ : Pareto k diagnostic values are slightly high (10% is above 0.7.
+
+### Pooled
+
+```{r}
+# pooled
+log_lik_pooled <- extract_log_lik(fit_pooled, 
+                                  merge_chains = FALSE)
+r_eff_pooled <- relative_eff(exp(log_lik_pooled)) 
+loo_pooled <- loo(log_lik_pooled, 
+                  r_eff = r_eff_pooled)
+print(loo_pooled)
+# visualizing:
+plot(loo_pooled, diagnostic = c("k", "n_eff"),
+     label_points = FALSE, main = "PSIS - pooled")
+```
+
+For the pooled model we get:
+
++ PSIS-LOO:  -131.0
++ $\hat{k}$ : All Pareto k estimates are ok (k < 0.7)
+
+### hierachical
+
+```{r}
+# hierarchial
+log_lik_hierarchical <- 
+  extract_log_lik(fit_hierarchical, merge_chains = FALSE)
+r_eff_hierarchical <- 
+  relative_eff(exp(log_lik_hierarchical)) 
+loo_hierarchical <- 
+  loo(log_lik_hierarchical, r_eff = r_eff_hierarchical)
+print(loo_hierarchical)
+# visualizing:
+plot(loo_hierarchical, diagnostic = c("k", "n_eff"),
+     label_points = FALSE, main = "PSIS - hierarchical")
+```
+
+For the hierachical model we get:
+
++ PSIS-LOO : -127.2
++ $\hat{k}$ : All Pareto k estimates are ok (k < 0.7)
+
+## Q3
+The computation of the effective number of parameters $p\_eff$ for each of the three models was done in the previous question with the loo function.
+Printing the results again:
+
+```{r}
+print(loo_separate)
+print(loo_pooled)
+print(loo_hierarchical)
+```
+
+## Q4
+In Q2 we answered this question with computations and plots. Summarizing the results from Q2:
+
+In the first plot (separated) we see three obersavations with pareto $\hat{k}$ > 0.7, which indicates that the model are not reliable.
+However the two last two diagnostic plots only shows $\hat{k}$ < 0.7, which means these models are reliable.
+
+## Q5
+To compare the models to each other we can use the compare function;
+
+```{r warning=FALSE}
+compare(loo_separate, loo_pooled)
+compare(loo_separate, loo_hierarchical)
+compare(loo_pooled, loo_hierarchical)
+```
+
+We do see a diference between all the models.
+To summarize the results obtained in Q1-Q4:
+
+#### Separate model
++ PSIS-LOO : -132.6, the highest of the three models (the smaller the better)
++ $\hat{k}$ : 90% good or ok. 10% bad
+
+#### Pooled model
++ PSIS-LOO : -131.
++ $\hat{k}$ 100 % good or ok
+
+#### Hierarchical model
++ PSIS-LOO : -127.2, smallest of the three models (and hereby best)
++ $\hat{k}$ : 100 % good or ok
+
+Overall the most reliable model is the Hierachical.
+
+
+
+
+## References:
+
+Based on code examples from:  
+https://github.com/avehtari/BDA_R_demos

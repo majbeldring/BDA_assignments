@@ -1,0 +1,124 @@
+---
+title: "BDA - Assignment 6"
+author: "Anonymous"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+# This chunk just sets echo = TRUE as default (i.e. print all code)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse) 
+library(aaltobda)
+library(rstan)
+# stan settings:
+source('stan_utility.R') # diagnosis of rhats
+options(mc.cores = parallel::detectCores()) #for local computer
+rstan_options(auto_write = TRUE) # autosave Stan
+# bay settings:
+library(loo) #pred. error of MCMC log likelihood
+library(gridExtra)
+library(bayesplot) #plots of posterior draws (mcmc_hist etc)
+library(shinystan) # model paramteres & MCMC simulations
+bayesplot_theme_set() #default
+SEED <- 48927 # random seed for reproducability
+data("bioassay")
+```
+
+## Q1
+
+With the bioassay data from the aaltobda package, we will create a stan model, that replicate the computations in section 3.7 in BDA3.
+we base it on the Gaussian prior from assignment 4 and 5, where:
+
+$\begin{bmatrix} \alpha \\ \beta\end{bmatrix} \sim \mathcal{N} \{\mathbf{\mu_0}, \mathbf{\Sigma_0} \}$, $\mathbf{\mu_0} = \begin{pmatrix} \mu_{\alpha} \\ \mu_{\beta} \end{pmatrix} =  \begin{pmatrix} 0 \\ 10 \end{pmatrix}$ and $\mathbf{\Sigma_0} = \begin{pmatrix} \sigma_{\alpha}^2 & \rho \sigma_{\alpha} \sigma_{\beta}\\ \rho \sigma_{\alpha} \sigma_{\beta} & \sigma_{\beta}^2 \end{pmatrix} = \begin{pmatrix}  4 & 10\\ 10 & 100 \end{pmatrix}$ .
+
+The created stanmodel: 
+
+```{r}
+# display the stanmodel "ex6.stan"
+writeLines(readLines("ex6.stan"))
+```
+
+Before calling our model, we need to summarize the data into a vector:
+```{r}
+N = length(bioassay$x)
+x = bioassay$x # dose
+y = bioassay$y # deaths
+n = bioassay$n # animals
+# values
+mu_alpha = 0
+mu_beta = 10
+sigma_alpha = 2
+sigma_beta = 10
+corr = 0.5 
+# the sigma matrix:
+sigma <-  matrix(c(sigma_alpha^2, corr*sigma_alpha*sigma_beta,
+                   corr*sigma_alpha*sigma_beta, sigma_beta^2 ), 
+                 ncol=2)
+mu = c(mu_alpha, mu_beta)
+# binomial data list
+d_bin <- list(N = N,
+              n = n,
+              x = x,
+              y = y, 
+              sigma_theta = sigma, 
+              mu_theta = mu)
+```
+
+We can now fit the data to our stan model:
+```{r}
+fit_bioassay <- stan(file="ex6.stan", data = d_bin, seed = SEED)
+```
+
+## Q2
+
+For convergence analysis, we can use the build-in $\hat{R}$ analysis in rstan:
+
+```{r}
+# Monitor takes an array of simulations as it argument
+# probs: specifying quantiles of interest
+monitor(fit_bioassay, probs = c(0.1, 0.5, 0.9))
+print(fit_bioassay) #returned by Stan's sampling function
+```
+
+Above we can find the $\hat{R}$ values to:
+
++ $\alpha$ (=theta[1]) = 1
++ $\beta$ (=theta[2]) = 1.
+
+Since the $\hat{R}$ values for $\alpha$ and $\beta$ are both 1 we conclude that the model has converged. This means that our estimates are acceptable as they get closer and closer to the real value as the iterations proceeds.
+
+## Q3
+
+Scatter plot of $\alpha$ and $\beta$ with ggplot:
+
+```{r}
+draws <- as.data.frame(fit_bioassay)
+xl <- c(-3, 5)
+yl <- c(-5, 35)
+ggplot(data = data.frame(draws$`theta[1]`, draws$`theta[2]`)) +
+  geom_point(aes(draws$`theta[1]`, draws$`theta[2]`), color = 'darkgreen', size = 0.4) +
+  coord_cartesian(xlim = xl, ylim = yl) +
+  labs(x = 'alpha', y = 'beta') +
+  ggtitle("Samples")
+```
+
+We can also use some of the mcmc plot functions to visualize $\alpha$ (theta[1]) and $\beta$ (theta[2]):
+```{r}
+# histogram of alpha and beta,
+# plots marginal posterior distributions combining all chains
+color_scheme_set("green")
+p1 <- mcmc_hist(draws, pars = 'theta[1]', binwidth = NULL)
+p2 <- mcmc_hist(draws, pars = 'theta[2]', binwidth = NULL)
+grid.arrange(p1, p2, ncol=2)
+# density
+mcmc_dens(draws, pars = c("theta[1]", "theta[2]"),
+          facet_args = list(nrow = 2))
+```
+
+**References:**
+
+Based on code examples from:  
+https://github.com/avehtari/BDA_R_demos

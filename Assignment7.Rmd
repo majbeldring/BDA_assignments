@@ -1,0 +1,249 @@
+---
+title: "BDA - Assignment 7"
+author: "Anonymous"
+date: "29/3/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) 
+```
+
+```{r message=FALSE, warning=FALSE}
+# Loading packages
+library(tidyverse) 
+library(aaltobda) # contains data "drowning" & "factory"
+library(rstan)
+# stan settings:
+source('stan_utility.R') # diagnosis of rhats
+options(mc.cores = parallel::detectCores()) #when using locally computer
+rstan_options(auto_write = TRUE) # autosave compiled Stan program
+# bay settings:
+library(loo) #estimate predictive error of MCMC item-level log likelihood output
+library(gridExtra)
+library(bayesplot) #plots of posterior draws
+library(shinystan) # model paramteres & MCMC simulations
+#theme_set(bayesplot::theme_default(base_family = "sans"))
+bayesplot_theme_set() #default
+SEED <- 48927 # set random seed for reproducability
+```
+
+## Q1 - Linear model: drowning data with Stan
+
+The drowning data contains the number of people drowned in Finland 1980-2016, which we want to investiagte using a linear model with Gaussian noise.
+
+### Q1.1 - fixing errors
+A Stan code is given with errors. We want to find and fix these.
+The errors are marked in the following:
+
+```{r eval=FALSE}
+data {  
+    int<lower=0> N; // number of data points 
+    vector[N] x; // observation year 
+    vector[N] y; // observation number of drowned 
+    real xpred; // prediction year 
+} 
+parameters { 
+  real alpha; 
+  real beta; 
+  real <upper=0> sigma; #error: variance can't be NEG
+} 
+transformed parameters { 
+  vector[N] mu; 
+  mu = alpha + beta*x; 
+} 
+model { 
+  y ~ normal(mu, sigma); 
+} 
+generated quantities { 
+  real ypred; 
+  ypred = normal_rng(mu, sigma); #error: mu is a vector parametre
+} 
+
+```
+
+For sigma error, we need to replace upper with lower.
+
+As for "mu is a vector parameter": ypred has been defined as a real value, which will cause an error since mu is a vector parametre. 
+
+After correcting the errors we get the following stan model:
+```{r} 
+writeLines(readLines("ex7_1.stan"))
+```
+
+
+### Q1.2 - Suitable values for $\tau$
+
+No prior for the parametres is defined in "ex7_1.stan", which corresponds to using a uniform prior.
+
+```{r}
+writeLines(readLines("ex7_2.stan"))
+```
+
+```{r}
+data("drowning")
+
+d_lin <- list(N = nrow(drowning),
+              x = drowning$year,
+              y = drowning$drownings ,
+              xpred = 2019)
+
+fit_lin <- stan(file="ex7_2.stan", data = d_lin, seed = SEED,control = list(max_treedepth =15))
+```
+
+We would like to apply a weakly informative prior $\beta \sim \mathcal{N}(0,\tau^2)$ for the slope paramtere $\beta$.
+Given is:
+$Pr(-69<\beta<69) = 0.99$. 
+Due to symmetry of the normal distribution, we get $p(\beta\le-69) = 0.005$, so tau can be calculated by:
+
+```{r}
+# tau calcuation
+tau <- -69 / qnorm(0.005) 
+tau
+```
+
+So we find tau to 26.8
+
+### Q1.3 - Implementation of the prior
+
+We add the calculated tau: 
+```{r}
+d_lin_prior <- c(list(
+    tau = 26.8),
+  d_lin)
+```
+
+Implementing in a new stan model:
+```{r}
+writeLines(readLines("ex7_3.stan"))
+```
+
+Fitting the model to the data
+```{r}
+fit_lin <- stan(file="ex7_3.stan", data = d_lin_prior, seed=SEED, control = list(max_treedepth =15))
+```
+
+
+```{r include=FALSE}
+monitor(fit_lin, probs = c(0.1, 0.5, 0.9))
+
+print(fit_lin)
+check_hmc_diagnostics(fit_lin)
+
+samples_lin <- rstan::extract(fit_lin, permuted = T)
+ mean(samples_lin$beta>0) # probability that beta > 0
+ 
+mu <- apply(samples_lin$mu, 2, quantile, c(0.05, 0.5, 0.95)) %>%
+  t() %>% data.frame(x = d_lin$x, .)  %>% gather(pct, y, -x)
+```
+
+Visualizing to compare with plot form ex7:
+```{r}
+p <- ggplot() +
+  geom_point(aes(x, y), data = data.frame(d_lin), size = 1) +
+  geom_line(aes(x, y, linetype = pct), data = mu, color = 'red') +
+  scale_linetype_manual(values = c(2,1,2)) +
+  labs(y = 'number of drowned', x= "Year") +
+  guides(linetype = F)
+
+pars <- intersect(names(samples_lin), c('beta','ypred')) 
+draws <- as.data.frame(fit_lin)
+phist <- mcmc_hist(draws, pars = pars)
+grid.arrange(p, phist, nrow = 2)
+```
+
+Comparing with the plot given in the exercise: Looks satisfying
+
+## Q2 - Hierarchical model: factory data with Stan
+
+## Seperated Gaussian Model
+
+Implementing the seperated model:
+```{r}
+writeLines(readLines("ex7_4.stan"))
+```
+
+The data related to this model is : 
+```{r}
+data("factory")
+data_separate <-list(N = 6*nrow(factory),
+                     K = 6,
+                     x = rep(1:6, nrow(factory)),
+                     y = c(t(factory)))
+
+#fitting in stan:
+fit_sep <- stan(file="ex7_4.stan", data = data_separate, seed = SEED)
+```
+
+
+### The posterior distribution of the mean of the sixth machine:
+
+```{r}
+draws_separate <- as.data.frame(fit_sep)
+mcmc_hist(draws_separate, pars = c("mu[6]", "ypred"))
+```
+
+### The posterior distribution of the mean of the quality measurements of the seventh machine:
+
+
+### Pooled model
+
+For the pooled model we assume that $\mu$ and $\sigma$ are the same for all machines. The Stan implementation for pooled model is as:
+```{r}
+writeLines(readLines("ex7_5.stan"))
+```
+
+The data related to this model is : 
+```{r}
+data_pooled <- list(N = 6*nrow(factory),
+                    y = c(t(factory)))
+```
+
+We fit the pooled model in stan as follows: 
+```{r}  
+fit_pooled <- stan(file = "ex7_5.stan", data = data_pooled, seed = SEED)
+```
+
+
+## i) The posterior of the mean of the sixth machine:
+$$ p(\mu_6|\sigma, y) \propto \mathcal{N}(\mu, \sigma^2) $$
+
+## ii) The predictive distribution for another quality measurement from the sixth machine: 
+
+$$ p(\hat{y_6}|\mu,\sigma) \propto  \mathcal{N}(\mu, \sigma^2) $$
+
+## iii) The posterior distribution of the mean of the quality measurements of the seventh machine:
+assuming the machines are identical, gives us: 
+$$ p(\mu_7|\mu, \sigma) \propto \mathcal{N}(\mu, \sigma^2)$$
+```{r}
+draws_pooled <- as.data.frame(fit_pooled)
+mcmc_hist(draws_pooled, pars = c("mu", "ypred", "mu_7"))
+```
+
+
+
+## Hierarchical model 
+
+The Stan implementation of the model:
+
+```{r}
+writeLines(readLines("ex7_6.stan"))
+```
+
+We fit the separate model in stan: 
+```{r}  
+fit_hierarchical <- stan(file="ex7_6.stan", data = data_separate, seed = SEED)
+```
+
+## The predictive distribution for another quality measurement from the sixth machine: 
+
+
+```{r} 
+draws_hierarchical <- as.data.frame(fit_hierarchical)
+mcmc_hist(draws_hierarchical, c("mu[6]", "ypred", "mu_7"))
+```
+
+**References:**
+
+Code examples are found at Github:  
+https://github.com/avehtari/BDA_R_demos
