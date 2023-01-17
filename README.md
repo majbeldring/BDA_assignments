@@ -1,6 +1,4 @@
-# BDA
+# BDA - Bayesian Data Analysis Course
+## DTU spring 2020
 
-# Bayesian Data Analysis Course
-# DTU spring 2020
-
-# Assignments by majbeldring
+Assignments for course
